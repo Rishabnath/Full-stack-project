@@ -115,6 +115,25 @@ public sealed class RestaurantsController : ControllerBase
         return Ok(response);
     }
 
+    [HttpDelete("{id:int}")]
+    [Authorize(Roles = nameof(UserRole.RestaurantOwner) + "," + nameof(UserRole.Admin))]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> Deactivate(
+        int id,
+        CancellationToken cancellationToken)
+    {
+        await _restaurantService.DeactivateAsync(
+            id,
+            GetCurrentUserId(),
+            cancellationToken);
+
+        return NoContent();
+    }
+
     private Guid GetCurrentUserId()
     {
         var subject = User.FindFirstValue("sub");

@@ -83,6 +83,26 @@ public sealed class OrdersController : ControllerBase
             order);
     }
 
+    [HttpPost("{id:int}/cancel")]
+    [Authorize(Roles = nameof(UserRole.Customer))]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> CancelMine(
+        int id,
+        CancellationToken cancellationToken)
+    {
+        await _orderService.CancelMineAsync(
+            GetCurrentUserId(),
+            id,
+            cancellationToken);
+
+        return NoContent();
+    }
+
     [HttpGet("restaurant/{restaurantId:int}")]
     [Authorize(Roles = nameof(UserRole.RestaurantOwner) + "," + nameof(UserRole.Admin))]
     [ProducesResponseType(typeof(OrderListResponse), StatusCodes.Status200OK)]

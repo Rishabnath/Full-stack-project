@@ -1,5 +1,4 @@
 using System.ComponentModel.DataAnnotations;
-using FoodSupply.Api.Entities;
 
 namespace FoodSupply.Api.DTOs.Orders;
 
@@ -23,8 +22,6 @@ public sealed class CreateOrderRequest
     [MinLength(1)]
     [MaxLength(50)]
     public List<CreateOrderItemRequest> Items { get; set; } = [];
-
-    public PaymentMethod PaymentMethod { get; set; }
 
     [StringLength(500)]
     public string? CustomerNote { get; set; }

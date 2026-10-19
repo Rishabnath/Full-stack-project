@@ -28,4 +28,9 @@ public interface IRestaurantService
         Guid callerUserId,
         UpdateRestaurantRequest request,
         CancellationToken cancellationToken = default);
+
+    Task DeactivateAsync(
+        int id,
+        Guid callerUserId,
+        CancellationToken cancellationToken = default);
 }

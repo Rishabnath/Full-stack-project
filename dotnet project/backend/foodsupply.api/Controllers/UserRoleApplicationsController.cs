@@ -62,7 +62,9 @@ public sealed class UserRoleApplicationsController : ControllerBase
     public async Task<ActionResult<IReadOnlyList<RoleApplicationResponse>>> GetPending(
         CancellationToken cancellationToken)
     {
-        var applications = await _applicationService.GetPendingAsync(cancellationToken);
+        var applications = await _applicationService.GetPendingAsync(
+            GetCurrentUserId(),
+            cancellationToken);
         return Ok(applications);
     }
 

@@ -1,4 +1,5 @@
 using FoodSupply.Api.DTOs.MenuItems;
+using FoodSupply.Api.Caching;
 using FoodSupply.Api.Entities;
 using FoodSupply.Api.Exceptions;
 using FoodSupply.Api.Repositories.Interfaces;
@@ -14,17 +15,20 @@ public sealed class MenuItemService : IMenuItemService
     private readonly IRestaurantRepository _restaurantRepository;
     private readonly ICategoryRepository _categoryRepository;
     private readonly IUserRepository _userRepository;
+    private readonly IAppCache _cache;
 
     public MenuItemService(
         IMenuItemRepository menuItemRepository,
         IRestaurantRepository restaurantRepository,
         ICategoryRepository categoryRepository,
-        IUserRepository userRepository)
+        IUserRepository userRepository,
+        IAppCache cache)
     {
         _menuItemRepository = menuItemRepository;
         _restaurantRepository = restaurantRepository;
         _categoryRepository = categoryRepository;
         _userRepository = userRepository;
+        _cache = cache;
     }
 
     public async Task<IReadOnlyList<MenuItemResponse>> GetAvailableForRestaurantAsync(
@@ -33,21 +37,30 @@ public sealed class MenuItemService : IMenuItemService
     {
         ValidateRestaurantId(restaurantId);
 
-        var restaurant = await _restaurantRepository.GetByIdAsync(
-            restaurantId,
-            cancellationToken);
+        return await _cache.GetOrCreateAsync(
+            $"catalog:menu-items:restaurant:{restaurantId}:available",
+            CacheDurations.Catalog,
+            async token =>
+            {
+                var restaurant = await _restaurantRepository.GetByIdAsync(
+                    restaurantId,
+                    token);
 
-        if (restaurant is null || !restaurant.IsActive)
-        {
-            throw new NotFoundException(
-                $"Active restaurant with ID {restaurantId} was not found.");
-        }
+                if (restaurant is null || !restaurant.IsActive)
+                {
+                    throw new NotFoundException(
+                        $"Active restaurant with ID {restaurantId} was not found.");
+                }
 
-        var menuItems = await _menuItemRepository.GetAvailableByRestaurantIdAsync(
-            restaurantId,
-            cancellationToken);
+                var menuItems = await _menuItemRepository.GetAvailableByRestaurantIdAsync(
+                    restaurantId,
+                    token);
 
-        return menuItems.Select(MapToResponse).ToList();
+                return menuItems.Select(MapToResponse).ToList();
+            },
+            cancellationToken,
+            CacheTags.MenuItems,
+            CacheTags.Restaurants);
     }
 
     public async Task<MenuItemResponse> GetAvailableByIdAsync(
@@ -58,28 +71,37 @@ public sealed class MenuItemService : IMenuItemService
         ValidateRestaurantId(restaurantId);
         ValidateMenuItemId(menuItemId);
 
-        var restaurant = await _restaurantRepository.GetByIdAsync(
-            restaurantId,
-            cancellationToken);
+        return await _cache.GetOrCreateAsync(
+            $"catalog:menu-items:restaurant:{restaurantId}:available:{menuItemId}",
+            CacheDurations.Catalog,
+            async token =>
+            {
+                var restaurant = await _restaurantRepository.GetByIdAsync(
+                    restaurantId,
+                    token);
 
-        if (restaurant is null || !restaurant.IsActive)
-        {
-            throw new NotFoundException(
-                $"Active restaurant with ID {restaurantId} was not found.");
-        }
+                if (restaurant is null || !restaurant.IsActive)
+                {
+                    throw new NotFoundException(
+                        $"Active restaurant with ID {restaurantId} was not found.");
+                }
 
-        var menuItem = await _menuItemRepository.GetByIdAsync(
-            restaurantId,
-            menuItemId,
-            cancellationToken);
+                var menuItem = await _menuItemRepository.GetByIdAsync(
+                    restaurantId,
+                    menuItemId,
+                    token);
 
-        if (menuItem is null || !menuItem.IsAvailable || !menuItem.Category.IsActive)
-        {
-            throw new NotFoundException(
-                $"Available menu item with ID {menuItemId} was not found in restaurant {restaurantId}.");
-        }
+                if (menuItem is null || !menuItem.IsAvailable || !menuItem.Category.IsActive)
+                {
+                    throw new NotFoundException(
+                        $"Available menu item with ID {menuItemId} was not found in restaurant {restaurantId}.");
+                }
 
-        return MapToResponse(menuItem);
+                return MapToResponse(menuItem);
+            },
+            cancellationToken,
+            CacheTags.MenuItems,
+            CacheTags.Restaurants);
     }
 
     public async Task<IReadOnlyList<MenuItemResponse>> GetManageableForRestaurantAsync(
@@ -92,11 +114,19 @@ public sealed class MenuItemService : IMenuItemService
             callerUserId,
             cancellationToken);
 
-        var menuItems = await _menuItemRepository.GetManageableByRestaurantIdAsync(
-            restaurantId,
-            cancellationToken);
+        return await _cache.GetOrCreateAsync(
+            $"menu-items:manage:{restaurantId}:{callerUserId:D}",
+            CacheDurations.UserData,
+            async token =>
+            {
+                var menuItems = await _menuItemRepository.GetManageableByRestaurantIdAsync(
+                    restaurantId,
+                    token);
 
-        return menuItems.Select(MapToResponse).ToList();
+                return menuItems.Select(MapToResponse).ToList();
+            },
+            cancellationToken,
+            CacheTags.MenuItems);
     }
 
     public async Task<MenuItemResponse> CreateAsync(
@@ -134,6 +164,7 @@ public sealed class MenuItemService : IMenuItemService
 
         await _menuItemRepository.AddAsync(menuItem, cancellationToken);
         await _menuItemRepository.SaveChangesAsync(cancellationToken);
+        InvalidateMenu(restaurantId);
 
         return MapToResponse(menuItem);
     }
@@ -184,6 +215,7 @@ public sealed class MenuItemService : IMenuItemService
             ?? throw new BadRequestException("Availability must be specified.");
 
         await _menuItemRepository.SaveChangesAsync(cancellationToken);
+        InvalidateMenu(restaurantId);
 
         return MapToResponse(menuItem);
     }
@@ -220,6 +252,7 @@ public sealed class MenuItemService : IMenuItemService
         // customer menus, but the order history remains valid.
         menuItem.IsAvailable = false;
         await _menuItemRepository.SaveChangesAsync(cancellationToken);
+        InvalidateMenu(restaurantId);
     }
 
     private async Task<Restaurant> GetRestaurantForManagerAsync(
@@ -399,5 +432,10 @@ public sealed class MenuItemService : IMenuItemService
             IsAvailable = menuItem.IsAvailable,
             CreatedAtUtc = menuItem.CreatedAtUtc
         };
+    }
+
+    private void InvalidateMenu(int restaurantId)
+    {
+        _cache.EvictTag(CacheTags.MenuItems);
     }
 }

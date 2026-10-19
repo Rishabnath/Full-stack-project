@@ -19,4 +19,14 @@ public interface IAuthService
     Task LogoutAsync(
         RefreshTokenRequest request,
         CancellationToken cancellationToken = default);
+
+    Task<IReadOnlyList<SessionResponse>> GetSessionsAsync(
+        Guid userId,
+        Guid currentSessionId,
+        CancellationToken cancellationToken = default);
+
+    Task RevokeSessionAsync(
+        Guid userId,
+        Guid sessionId,
+        CancellationToken cancellationToken = default);
 }

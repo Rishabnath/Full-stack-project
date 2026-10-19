@@ -1,4 +1,5 @@
 using FoodSupply.Api.DTOs.Auth;
+using FoodSupply.Api.Caching;
 using FoodSupply.Api.Entities;
 using FoodSupply.Api.Exceptions;
 using FoodSupply.Api.Repositories.Interfaces;
@@ -14,17 +15,20 @@ public sealed class AuthService : IAuthService
     private readonly IUserSessionRepository _userSessionRepository;
     private readonly IPasswordHasher<ApplicationUser> _passwordHasher;
     private readonly ITokenService _tokenService;
+    private readonly IAppCache _cache;
 
     public AuthService(
         IUserRepository userRepository,
         IUserSessionRepository userSessionRepository,
         IPasswordHasher<ApplicationUser> passwordHasher,
-        ITokenService tokenService)
+        ITokenService tokenService,
+        IAppCache cache)
     {
         _userRepository = userRepository;
         _userSessionRepository = userSessionRepository;
         _passwordHasher = passwordHasher;
         _tokenService = tokenService;
+        _cache = cache;
     }
 
     public async Task<AuthResponse> RegisterAsync(
@@ -171,7 +175,9 @@ public sealed class AuthService : IAuthService
             CreatedAtUtc = nowUtc,
             ExpiresAtUtc = nextRefreshToken.ExpiresAtUtc
         };
-        var accessToken = _tokenService.CreateAccessToken(currentSession.User);
+        var accessToken = _tokenService.CreateAccessToken(
+            currentSession.User,
+            nextSession.Id);
 
         var rotated = await _userSessionRepository.TryRotateAsync(
             currentSession.Id,
@@ -185,6 +191,8 @@ public sealed class AuthService : IAuthService
             throw new UnauthorizedException(
                 "Refresh token has already been used or revoked. Log in again.");
         }
+
+        _cache.EvictTag(CacheTags.Sessions);
 
         return CreateAuthResponse(
             currentSession.User,
@@ -207,6 +215,71 @@ public sealed class AuthService : IAuthService
             refreshTokenHash,
             DateTime.UtcNow,
             cancellationToken);
+        _cache.EvictTag(CacheTags.Sessions);
+    }
+
+    public async Task<IReadOnlyList<SessionResponse>> GetSessionsAsync(
+        Guid userId,
+        Guid currentSessionId,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateUserId(userId);
+        ValidateSessionId(currentSessionId);
+        await EnsureActiveUserAsync(userId, cancellationToken);
+
+        var sessions = await _cache.GetOrCreateAsync(
+            $"auth:sessions:{userId:D}",
+            CacheDurations.UserData,
+            async token =>
+            {
+                var activeSessions = await _userSessionRepository.GetActiveByUserIdAsync(
+                    userId,
+                    DateTime.UtcNow,
+                    token);
+
+                return activeSessions.Select(session => new SessionResponse
+                {
+                    Id = session.Id,
+                    DeviceName = session.DeviceName,
+                    CreatedAtUtc = session.CreatedAtUtc,
+                    ExpiresAtUtc = session.ExpiresAtUtc
+                }).ToList();
+            },
+            cancellationToken,
+            CacheTags.Sessions);
+
+        return sessions.Select(session => new SessionResponse
+        {
+            Id = session.Id,
+            DeviceName = session.DeviceName,
+            CreatedAtUtc = session.CreatedAtUtc,
+            ExpiresAtUtc = session.ExpiresAtUtc,
+            IsCurrent = session.Id == currentSessionId
+        }).ToList();
+    }
+
+    public async Task RevokeSessionAsync(
+        Guid userId,
+        Guid sessionId,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateUserId(userId);
+        ValidateSessionId(sessionId);
+        await EnsureActiveUserAsync(userId, cancellationToken);
+
+        var revoked = await _userSessionRepository.TryRevokeAsync(
+            userId,
+            sessionId,
+            DateTime.UtcNow,
+            cancellationToken);
+
+        if (!revoked)
+        {
+            throw new NotFoundException(
+                "The requested session was not found or is already expired or revoked.");
+        }
+
+        _cache.EvictTag(CacheTags.Sessions);
     }
 
     private async Task<AuthResponse> CreateAuthResponseAsync(
@@ -215,7 +288,6 @@ public sealed class AuthService : IAuthService
         CancellationToken cancellationToken)
     {
         var nowUtc = DateTime.UtcNow;
-        var accessToken = _tokenService.CreateAccessToken(user);
         var refreshToken = _tokenService.CreateRefreshToken();
         var session = new UserSession
         {
@@ -226,9 +298,11 @@ public sealed class AuthService : IAuthService
             CreatedAtUtc = nowUtc,
             ExpiresAtUtc = refreshToken.ExpiresAtUtc
         };
+        var accessToken = _tokenService.CreateAccessToken(user, session.Id);
 
         await _userSessionRepository.AddAsync(session, cancellationToken);
         await _userSessionRepository.SaveChangesAsync(cancellationToken);
+        _cache.EvictTag(CacheTags.Sessions);
 
         return CreateAuthResponse(user, session.Id, accessToken, refreshToken);
     }
@@ -261,6 +335,33 @@ public sealed class AuthService : IAuthService
         return string.IsNullOrWhiteSpace(deviceName)
             ? "Unknown device"
             : deviceName.Trim();
+    }
+
+    private async Task EnsureActiveUserAsync(
+        Guid userId,
+        CancellationToken cancellationToken)
+    {
+        var user = await _userRepository.GetByIdAsync(userId, cancellationToken);
+        if (user is null || !user.IsActive)
+        {
+            throw new UnauthorizedException("Your account is unavailable.");
+        }
+    }
+
+    private static void ValidateUserId(Guid userId)
+    {
+        if (userId == Guid.Empty)
+        {
+            throw new UnauthorizedException("A valid authenticated user is required.");
+        }
+    }
+
+    private static void ValidateSessionId(Guid sessionId)
+    {
+        if (sessionId == Guid.Empty)
+        {
+            throw new BadRequestException("A valid session ID is required.");
+        }
     }
 
     private static string NormalizeEmail(string email)

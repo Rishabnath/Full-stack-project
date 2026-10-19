@@ -1,4 +1,5 @@
 using FoodSupply.Api.DTOs.Addresses;
+using FoodSupply.Api.Caching;
 using FoodSupply.Api.Entities;
 using FoodSupply.Api.Exceptions;
 using FoodSupply.Api.Repositories.Interfaces;
@@ -9,10 +10,17 @@ namespace FoodSupply.Api.Services;
 public sealed class CustomerAddressService : ICustomerAddressService
 {
     private readonly ICustomerAddressRepository _addressRepository;
+    private readonly IUserRepository _userRepository;
+    private readonly IAppCache _cache;
 
-    public CustomerAddressService(ICustomerAddressRepository addressRepository)
+    public CustomerAddressService(
+        ICustomerAddressRepository addressRepository,
+        IUserRepository userRepository,
+        IAppCache cache)
     {
         _addressRepository = addressRepository;
+        _userRepository = userRepository;
+        _cache = cache;
     }
 
     public async Task<IReadOnlyList<AddressResponse>> GetMineAsync(
@@ -20,12 +28,18 @@ public sealed class CustomerAddressService : ICustomerAddressService
         CancellationToken cancellationToken = default)
     {
         ValidateUserId(userId);
+        await ValidateActiveCustomerAsync(userId, cancellationToken);
 
-        var addresses = await _addressRepository.GetAllByUserIdAsync(
-            userId,
-            cancellationToken);
-
-        return addresses.Select(MapToResponse).ToList();
+        return await _cache.GetOrCreateAsync(
+            $"addresses:user:{userId:D}:all",
+            CacheDurations.UserData,
+            async token =>
+            {
+                var addresses = await _addressRepository.GetAllByUserIdAsync(userId, token);
+                return addresses.Select(MapToResponse).ToList();
+            },
+            cancellationToken,
+            CacheTags.Addresses);
     }
 
     public async Task<AddressResponse> GetByIdAsync(
@@ -33,8 +47,19 @@ public sealed class CustomerAddressService : ICustomerAddressService
         int addressId,
         CancellationToken cancellationToken = default)
     {
-        var address = await GetOwnedAddressAsync(userId, addressId, cancellationToken);
-        return MapToResponse(address);
+        ValidateUserId(userId);
+        await ValidateActiveCustomerAsync(userId, cancellationToken);
+
+        return await _cache.GetOrCreateAsync(
+            $"addresses:user:{userId:D}:{addressId}",
+            CacheDurations.UserData,
+            async token =>
+            {
+                var address = await GetOwnedAddressAsync(userId, addressId, token);
+                return MapToResponse(address);
+            },
+            cancellationToken,
+            CacheTags.Addresses);
     }
 
     public async Task<AddressResponse> CreateAsync(
@@ -43,6 +68,7 @@ public sealed class CustomerAddressService : ICustomerAddressService
         CancellationToken cancellationToken = default)
     {
         ValidateUserId(userId);
+        await ValidateActiveCustomerAsync(userId, cancellationToken);
 
         if (request is null)
         {
@@ -70,6 +96,7 @@ public sealed class CustomerAddressService : ICustomerAddressService
         // address becomes the default even if they omit IsDefault in the request.
         var makeDefault = request.IsDefault || currentAddresses.Count == 0;
         await _addressRepository.AddAsync(address, makeDefault, cancellationToken);
+        InvalidateAddresses(userId);
 
         return MapToResponse(address);
     }
@@ -96,6 +123,7 @@ public sealed class CustomerAddressService : ICustomerAddressService
         address.Country = NormalizeRequiredText(request.Country, "Country", 2, 100);
 
         await _addressRepository.SaveChangesAsync(cancellationToken);
+        InvalidateAddresses(userId);
         return MapToResponse(address);
     }
 
@@ -112,6 +140,7 @@ public sealed class CustomerAddressService : ICustomerAddressService
                 userId,
                 address,
                 cancellationToken);
+            InvalidateAddresses(userId);
         }
     }
 
@@ -122,6 +151,7 @@ public sealed class CustomerAddressService : ICustomerAddressService
     {
         var address = await GetOwnedAddressAsync(userId, addressId, cancellationToken);
         await _addressRepository.DeleteAsync(userId, address, cancellationToken);
+        InvalidateAddresses(userId);
     }
 
     private async Task<CustomerAddress> GetOwnedAddressAsync(
@@ -130,6 +160,7 @@ public sealed class CustomerAddressService : ICustomerAddressService
         CancellationToken cancellationToken)
     {
         ValidateUserId(userId);
+        await ValidateActiveCustomerAsync(userId, cancellationToken);
 
         if (addressId <= 0)
         {
@@ -143,6 +174,27 @@ public sealed class CustomerAddressService : ICustomerAddressService
 
         return address ?? throw new NotFoundException(
             $"Address with ID {addressId} was not found.");
+    }
+
+    private async Task ValidateActiveCustomerAsync(
+        Guid userId,
+        CancellationToken cancellationToken)
+    {
+        var user = await _userRepository.GetByIdAsync(userId, cancellationToken);
+        if (user is null || !user.IsActive)
+        {
+            throw new UnauthorizedException("Your account is unavailable.");
+        }
+
+        if (user.Role != UserRole.Customer)
+        {
+            throw new ForbiddenException("Only customer accounts can manage addresses.");
+        }
+    }
+
+    private void InvalidateAddresses(Guid userId)
+    {
+        _cache.EvictTag(CacheTags.Addresses);
     }
 
     private static void ValidateUserId(Guid userId)

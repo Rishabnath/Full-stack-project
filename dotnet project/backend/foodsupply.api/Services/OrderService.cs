@@ -1,4 +1,5 @@
 using FoodSupply.Api.DTOs.Orders;
+using FoodSupply.Api.Caching;
 using FoodSupply.Api.Entities;
 using FoodSupply.Api.Exceptions;
 using FoodSupply.Api.Repositories.Interfaces;
@@ -16,19 +17,23 @@ public sealed class OrderService : IOrderService
     private readonly IMenuItemRepository _menuItemRepository;
     private readonly ICustomerAddressRepository _addressRepository;
     private readonly IUserRepository _userRepository;
+    private readonly IAppCache _cache;
+    private const decimal MaximumOrderTotal = 9999999999.99m;
 
     public OrderService(
         IOrderRepository orderRepository,
         IRestaurantRepository restaurantRepository,
         IMenuItemRepository menuItemRepository,
         ICustomerAddressRepository addressRepository,
-        IUserRepository userRepository)
+        IUserRepository userRepository,
+        IAppCache cache)
     {
         _orderRepository = orderRepository;
         _restaurantRepository = restaurantRepository;
         _menuItemRepository = menuItemRepository;
         _addressRepository = addressRepository;
         _userRepository = userRepository;
+        _cache = cache;
     }
 
     public async Task<OrderListResponse> GetMineAsync(
@@ -39,35 +44,23 @@ public sealed class OrderService : IOrderService
     {
         await GetActiveCustomerAsync(customerId, cancellationToken);
 
-        if (page < 1)
-        {
-            throw new BadRequestException("Page must be at least 1.");
-        }
+        var (skip, validatedPageSize) = ValidatePage(page, pageSize);
 
-        if (pageSize < 1 || pageSize > MaximumPageSize)
-        {
-            throw new BadRequestException($"Page size must be between 1 and {MaximumPageSize}.");
-        }
+        return await _cache.GetOrCreateAsync(
+            $"orders:customer:{customerId:D}:page:{page}:{validatedPageSize}",
+            CacheDurations.UserData,
+            async token =>
+            {
+                var (orders, totalCount) = await _orderRepository.GetPageByCustomerIdAsync(
+                    customerId,
+                    skip,
+                    validatedPageSize,
+                    token);
 
-        var skipLong = (long)(page - 1) * pageSize;
-        if (skipLong > int.MaxValue)
-        {
-            throw new BadRequestException("The requested page is too large.");
-        }
-
-        var (orders, totalCount) = await _orderRepository.GetPageByCustomerIdAsync(
-            customerId,
-            (int)skipLong,
-            pageSize,
-            cancellationToken);
-
-        return new OrderListResponse
-        {
-            Items = orders.Select(MapToSummary).ToList(),
-            Page = page,
-            PageSize = pageSize,
-            TotalCount = totalCount
-        };
+                return MapToList(orders, page, validatedPageSize, totalCount);
+            },
+            cancellationToken,
+            CacheTags.Orders);
     }
 
     public async Task<OrderResponse> GetMineByIdAsync(
@@ -78,14 +71,22 @@ public sealed class OrderService : IOrderService
         await GetActiveCustomerAsync(customerId, cancellationToken);
         ValidateOrderId(orderId);
 
-        var order = await _orderRepository.GetByIdForCustomerAsync(
-            customerId,
-            orderId,
-            cancellationToken);
+        return await _cache.GetOrCreateAsync(
+            $"orders:customer:{customerId:D}:detail:{orderId}",
+            CacheDurations.UserData,
+            async token =>
+            {
+                var order = await _orderRepository.GetByIdForCustomerAsync(
+                    customerId,
+                    orderId,
+                    token);
 
-        return order is null
-            ? throw new NotFoundException($"Order with ID {orderId} was not found.")
-            : MapToResponse(order);
+                return order is null
+                    ? throw new NotFoundException($"Order with ID {orderId} was not found.")
+                    : MapToResponse(order);
+            },
+            cancellationToken,
+            CacheTags.Orders);
     }
 
     public async Task<OrderResponse> CreateAsync(
@@ -108,11 +109,6 @@ public sealed class OrderService : IOrderService
         if (request.AddressId <= 0)
         {
             throw new BadRequestException("Address ID must be greater than zero.");
-        }
-
-        if (!Enum.IsDefined(typeof(PaymentMethod), request.PaymentMethod))
-        {
-            throw new BadRequestException("A valid payment method is required.");
         }
 
         if (request.Items is null ||
@@ -219,6 +215,12 @@ public sealed class OrderService : IOrderService
             2,
             MidpointRounding.AwayFromZero);
 
+        if (subtotal > MaximumOrderTotal)
+        {
+            throw new BadRequestException(
+                $"Order total cannot exceed {MaximumOrderTotal:0.00} INR.");
+        }
+
         // Delivery fees and taxes remain zero until pricing rules are configured.
         const decimal deliveryFee = 0m;
         const decimal taxAmount = 0m;
@@ -252,7 +254,7 @@ public sealed class OrderService : IOrderService
             [
                 new Payment
                 {
-                    Method = request.PaymentMethod,
+                    Method = PaymentMethod.CashOnDelivery,
                     Status = PaymentStatus.Pending,
                     Amount = totalAmount,
                     CurrencyCode = "INR",
@@ -271,10 +273,52 @@ public sealed class OrderService : IOrderService
             ]
         };
 
-        await _orderRepository.AddAsync(order, cancellationToken);
-        await _orderRepository.SaveChangesAsync(cancellationToken);
+        await _orderRepository.CreateWithOutboxAsync(order, cancellationToken);
+        _cache.EvictTag(CacheTags.Orders);
 
         return MapToResponse(order);
+    }
+
+    public async Task CancelMineAsync(
+        Guid customerId,
+        int orderId,
+        CancellationToken cancellationToken = default)
+    {
+        var customer = await GetActiveCustomerAsync(customerId, cancellationToken);
+        ValidateOrderId(orderId);
+
+        var order = await _orderRepository.GetByIdForCustomerAsync(
+            customer.Id,
+            orderId,
+            cancellationToken);
+
+        if (order is null)
+        {
+            throw new NotFoundException($"Order with ID {orderId} was not found.");
+        }
+
+        if (order.Status != OrderStatus.Placed)
+        {
+            throw new ConflictException(
+                "An order can be cancelled only before the restaurant accepts it.");
+        }
+
+        var cancelled = await _orderRepository.TryTransitionStatusAsync(
+            order.Id,
+            OrderStatus.Placed,
+            OrderStatus.Cancelled,
+            customer.Id,
+            requireAssignedDeliveryPartner: false,
+            note: "Cancelled by customer before restaurant acceptance.",
+            cancellationToken);
+
+        if (!cancelled)
+        {
+            throw new ConflictException(
+                "The order changed while you were cancelling it. Refresh the order and try again.");
+        }
+
+        _cache.EvictTag(CacheTags.Orders);
     }
 
     public async Task<OrderListResponse> GetRestaurantOrdersAsync(
@@ -318,14 +362,24 @@ public sealed class OrderService : IOrderService
         }
 
         var (skip, validatedPageSize) = ValidatePage(page, pageSize);
-        var (orders, totalCount) = await _orderRepository.GetPageByRestaurantIdAsync(
-            restaurantId,
-            status,
-            skip,
-            validatedPageSize,
-            cancellationToken);
+        var statusKey = status?.ToString() ?? "all";
 
-        return MapToList(orders, page, validatedPageSize, totalCount);
+        return await _cache.GetOrCreateAsync(
+            $"orders:restaurant:{restaurantId}:viewer:{callerUserId:D}:status:{statusKey}:page:{page}:{validatedPageSize}",
+            CacheDurations.UserData,
+            async token =>
+            {
+                var (orders, totalCount) = await _orderRepository.GetPageByRestaurantIdAsync(
+                    restaurantId,
+                    status,
+                    skip,
+                    validatedPageSize,
+                    token);
+
+                return MapToList(orders, page, validatedPageSize, totalCount);
+            },
+            cancellationToken,
+            CacheTags.Orders);
     }
 
     public async Task<OrderListResponse> GetAvailableDeliveryOrdersAsync(
@@ -342,12 +396,21 @@ public sealed class OrderService : IOrderService
         }
 
         var (skip, validatedPageSize) = ValidatePage(page, pageSize);
-        var (orders, totalCount) = await _orderRepository.GetAvailableForDeliveryPageAsync(
-            skip,
-            validatedPageSize,
-            cancellationToken);
 
-        return MapToList(orders, page, validatedPageSize, totalCount);
+        return await _cache.GetOrCreateAsync(
+            $"orders:delivery:available:viewer:{deliveryPartnerId:D}:page:{page}:{validatedPageSize}",
+            CacheDurations.UserData,
+            async token =>
+            {
+                var (orders, totalCount) = await _orderRepository.GetAvailableForDeliveryPageAsync(
+                    skip,
+                    validatedPageSize,
+                    token);
+
+                return MapToList(orders, page, validatedPageSize, totalCount);
+            },
+            cancellationToken,
+            CacheTags.Orders);
     }
 
     public async Task<OrderListResponse> GetMyDeliveryOrdersAsync(
@@ -363,13 +426,22 @@ public sealed class OrderService : IOrderService
         }
 
         var (skip, validatedPageSize) = ValidatePage(page, pageSize);
-        var (orders, totalCount) = await _orderRepository.GetDeliveryPartnerPageAsync(
-            partner.Id,
-            skip,
-            validatedPageSize,
-            cancellationToken);
 
-        return MapToList(orders, page, validatedPageSize, totalCount);
+        return await _cache.GetOrCreateAsync(
+            $"orders:delivery:partner:{partner.Id:D}:page:{page}:{validatedPageSize}",
+            CacheDurations.UserData,
+            async token =>
+            {
+                var (orders, totalCount) = await _orderRepository.GetDeliveryPartnerPageAsync(
+                    partner.Id,
+                    skip,
+                    validatedPageSize,
+                    token);
+
+                return MapToList(orders, page, validatedPageSize, totalCount);
+            },
+            cancellationToken,
+            CacheTags.Orders);
     }
 
     public async Task<OrderResponse> GetOperationalByIdAsync(
@@ -380,28 +452,34 @@ public sealed class OrderService : IOrderService
         var caller = await GetActiveUserAsync(callerUserId, cancellationToken);
         ValidateOrderId(orderId);
 
-        var order = await _orderRepository.GetByIdForWorkflowAsync(
-            orderId,
-            cancellationToken);
+        return await _cache.GetOrCreateAsync(
+            $"orders:operations:{callerUserId:D}:{orderId}",
+            CacheDurations.UserData,
+            async token =>
+            {
+                var order = await _orderRepository.GetByIdForWorkflowAsync(orderId, token);
 
-        if (order is null)
-        {
-            throw new NotFoundException($"Order with ID {orderId} was not found.");
-        }
+                if (order is null)
+                {
+                    throw new NotFoundException($"Order with ID {orderId} was not found.");
+                }
 
-        var isAdministrator = caller.Role == UserRole.Admin;
-        var ownsRestaurant = caller.Role == UserRole.RestaurantOwner &&
-                             order.Restaurant.OwnerId == caller.Id;
-        var isAssignedDeliveryPartner = caller.Role == UserRole.DeliveryPartner &&
-                                        order.DeliveryPartnerId == caller.Id;
+                var isAdministrator = caller.Role == UserRole.Admin;
+                var ownsRestaurant = caller.Role == UserRole.RestaurantOwner &&
+                                     order.Restaurant.OwnerId == caller.Id;
+                var isAssignedDeliveryPartner = caller.Role == UserRole.DeliveryPartner &&
+                                                order.DeliveryPartnerId == caller.Id;
 
-        if (!isAdministrator && !ownsRestaurant && !isAssignedDeliveryPartner)
-        {
-            throw new ForbiddenException(
-                "You do not have access to the operational details for this order.");
-        }
+                if (!isAdministrator && !ownsRestaurant && !isAssignedDeliveryPartner)
+                {
+                    throw new ForbiddenException(
+                        "You do not have access to the operational details for this order.");
+                }
 
-        return MapToResponse(order);
+                return MapToResponse(order);
+            },
+            cancellationToken,
+            CacheTags.Orders);
     }
 
     public async Task ClaimDeliveryAsync(
@@ -450,6 +528,8 @@ public sealed class OrderService : IOrderService
             throw new ConflictException(
                 "This order is no longer available. Refresh the delivery list and try another order.");
         }
+
+        _cache.EvictTag(CacheTags.Orders);
     }
 
     public async Task ChangeStatusAsync(
@@ -538,6 +618,8 @@ public sealed class OrderService : IOrderService
             throw new ConflictException(
                 "The order changed while you were updating it. Refresh it and try again.");
         }
+
+        _cache.EvictTag(CacheTags.Orders);
     }
 
     private async Task<ApplicationUser> GetActiveCustomerAsync(

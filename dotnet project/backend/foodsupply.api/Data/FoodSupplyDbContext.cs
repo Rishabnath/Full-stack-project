@@ -26,6 +26,8 @@ public sealed class FoodSupplyDbContext : DbContext
 
     public DbSet<Order> Orders => Set<Order>();
 
+    public DbSet<OrderOutboxMessage> OrderOutboxMessages => Set<OrderOutboxMessage>();
+
     public DbSet<OrderItem> OrderItems => Set<OrderItem>();
 
     public DbSet<OrderStatusHistory> OrderStatusHistory => Set<OrderStatusHistory>();
@@ -682,6 +684,66 @@ public sealed class FoodSupplyDbContext : DbContext
                 .WithMany(user => user.StatusChanges)
                 .HasForeignKey(history => history.ChangedByUserId)
                 .OnDelete(DeleteBehavior.SetNull);
+        });
+
+        modelBuilder.Entity<OrderOutboxMessage>(entity =>
+        {
+            entity.ToTable("outbox_messages");
+
+            entity.HasKey(message => message.Id);
+
+            entity.Property(message => message.Id)
+                .HasColumnName("id")
+                .ValueGeneratedNever();
+
+            entity.Property(message => message.EventType)
+                .HasColumnName("event_type")
+                .HasMaxLength(150)
+                .IsRequired();
+
+            entity.Property(message => message.RoutingKey)
+                .HasColumnName("routing_key")
+                .HasMaxLength(200)
+                .IsRequired();
+
+            entity.Property(message => message.Payload)
+                .HasColumnName("payload")
+                .HasColumnType("text")
+                .IsRequired();
+
+            entity.Property(message => message.OccurredAtUtc)
+                .HasColumnName("occurred_at_utc")
+                .HasColumnType("timestamp with time zone")
+                .IsRequired();
+
+            entity.Property(message => message.NextAttemptAtUtc)
+                .HasColumnName("next_attempt_at_utc")
+                .HasColumnType("timestamp with time zone")
+                .IsRequired();
+
+            entity.Property(message => message.PublishedAtUtc)
+                .HasColumnName("published_at_utc")
+                .HasColumnType("timestamp with time zone");
+
+            entity.Property(message => message.LockedUntilUtc)
+                .HasColumnName("locked_until_utc")
+                .HasColumnType("timestamp with time zone");
+
+            entity.Property(message => message.AttemptCount)
+                .HasColumnName("attempt_count")
+                .HasDefaultValue(0)
+                .IsRequired();
+
+            entity.Property(message => message.LastError)
+                .HasColumnName("last_error")
+                .HasMaxLength(2000);
+
+            entity.HasIndex(message => new
+            {
+                message.PublishedAtUtc,
+                message.NextAttemptAtUtc,
+                message.OccurredAtUtc
+            });
         });
 
         modelBuilder.Entity<Payment>(entity =>

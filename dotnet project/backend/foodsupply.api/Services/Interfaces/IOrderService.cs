@@ -21,6 +21,11 @@ public interface IOrderService
         CreateOrderRequest request,
         CancellationToken cancellationToken = default);
 
+    Task CancelMineAsync(
+        Guid customerId,
+        int orderId,
+        CancellationToken cancellationToken = default);
+
     Task<OrderListResponse> GetRestaurantOrdersAsync(
         Guid callerUserId,
         int restaurantId,

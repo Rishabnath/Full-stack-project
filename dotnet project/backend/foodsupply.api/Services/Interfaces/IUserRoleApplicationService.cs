@@ -14,6 +14,7 @@ public interface IUserRoleApplicationService
         CancellationToken cancellationToken = default);
 
     Task<IReadOnlyList<RoleApplicationResponse>> GetPendingAsync(
+        Guid administratorUserId,
         CancellationToken cancellationToken = default);
 
     Task<RoleApplicationResponse> ApproveAsync(

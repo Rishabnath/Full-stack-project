@@ -51,7 +51,7 @@ public interface IOrderRepository
         string? note,
         CancellationToken cancellationToken = default);
 
-    Task AddAsync(Order order, CancellationToken cancellationToken = default);
-
-    Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
+    Task CreateWithOutboxAsync(
+        Order order,
+        CancellationToken cancellationToken = default);
 }

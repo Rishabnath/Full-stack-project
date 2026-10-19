@@ -1,4 +1,5 @@
 using FoodSupply.Api.DTOs.Restaurants;
+using FoodSupply.Api.Caching;
 using FoodSupply.Api.Entities;
 using FoodSupply.Api.Exceptions;
 using FoodSupply.Api.Repositories.Interfaces;
@@ -12,13 +13,16 @@ public sealed class RestaurantService : IRestaurantService
 
     private readonly IRestaurantRepository _restaurantRepository;
     private readonly IUserRepository _userRepository;
+    private readonly IAppCache _cache;
 
     public RestaurantService(
         IRestaurantRepository restaurantRepository,
-        IUserRepository userRepository)
+        IUserRepository userRepository,
+        IAppCache cache)
     {
         _restaurantRepository = restaurantRepository;
         _userRepository = userRepository;
+        _cache = cache;
     }
 
     public async Task<RestaurantListResponse> GetActivePageAsync(
@@ -45,19 +49,30 @@ public sealed class RestaurantService : IRestaurantService
         }
 
         var normalizedCity = NormalizeOptionalText(city, "City", 100);
-        var (restaurants, totalCount) = await _restaurantRepository.GetActivePageAsync(
-            normalizedCity,
-            (int)skipLong,
-            pageSize,
-            cancellationToken);
+        var cityKey = normalizedCity?.ToUpperInvariant() ?? "all";
+        var cacheKey = $"catalog:restaurants:page:{cityKey}:{page}:{pageSize}";
 
-        return new RestaurantListResponse
-        {
-            Items = restaurants.Select(MapToResponse).ToList(),
-            Page = page,
-            PageSize = pageSize,
-            TotalCount = totalCount
-        };
+        return await _cache.GetOrCreateAsync(
+            cacheKey,
+            CacheDurations.Catalog,
+            async token =>
+            {
+                var (restaurants, totalCount) = await _restaurantRepository.GetActivePageAsync(
+                    normalizedCity,
+                    (int)skipLong,
+                    pageSize,
+                    token);
+
+                return new RestaurantListResponse
+                {
+                    Items = restaurants.Select(MapToResponse).ToList(),
+                    Page = page,
+                    PageSize = pageSize,
+                    TotalCount = totalCount
+                };
+            },
+            cancellationToken,
+            CacheTags.Restaurants);
     }
 
     public async Task<RestaurantResponse> GetActiveByIdAsync(
@@ -66,17 +81,23 @@ public sealed class RestaurantService : IRestaurantService
     {
         ValidateRestaurantId(id);
 
-        var restaurant = await _restaurantRepository.GetByIdAsync(
-            id,
-            cancellationToken);
+        return await _cache.GetOrCreateAsync(
+            $"catalog:restaurants:active:{id}",
+            CacheDurations.Catalog,
+            async token =>
+            {
+                var restaurant = await _restaurantRepository.GetByIdAsync(id, token);
 
-        if (restaurant is null || !restaurant.IsActive)
-        {
-            throw new NotFoundException(
-                $"Active restaurant with ID {id} was not found.");
-        }
+                if (restaurant is null || !restaurant.IsActive)
+                {
+                    throw new NotFoundException(
+                        $"Active restaurant with ID {id} was not found.");
+                }
 
-        return MapToResponse(restaurant);
+                return MapToResponse(restaurant);
+            },
+            cancellationToken,
+            CacheTags.Restaurants);
     }
 
     public async Task<IReadOnlyList<RestaurantResponse>> GetMineAsync(
@@ -85,11 +106,19 @@ public sealed class RestaurantService : IRestaurantService
     {
         ValidateUserId(ownerId);
 
-        var restaurants = await _restaurantRepository.GetByOwnerIdAsync(
-            ownerId,
-            cancellationToken);
+        return await _cache.GetOrCreateAsync(
+            $"restaurants:owner:{ownerId:D}",
+            CacheDurations.UserData,
+            async token =>
+            {
+                var restaurants = await _restaurantRepository.GetByOwnerIdAsync(
+                    ownerId,
+                    token);
 
-        return restaurants.Select(MapToResponse).ToList();
+                return restaurants.Select(MapToResponse).ToList();
+            },
+            cancellationToken,
+            CacheTags.Restaurants);
     }
 
     public async Task<RestaurantResponse> CreateAsync(
@@ -131,6 +160,7 @@ public sealed class RestaurantService : IRestaurantService
 
         await _restaurantRepository.AddAsync(restaurant, cancellationToken);
         await _restaurantRepository.SaveChangesAsync(cancellationToken);
+        InvalidateRestaurantCatalog(ownerId);
 
         return MapToResponse(restaurant);
     }
@@ -196,8 +226,66 @@ public sealed class RestaurantService : IRestaurantService
         restaurant.ImageUrl = NormalizeImageUrl(request.ImageUrl);
 
         await _restaurantRepository.SaveChangesAsync(cancellationToken);
+        InvalidateRestaurantCatalog(restaurant.OwnerId);
 
         return MapToResponse(restaurant);
+    }
+
+    public async Task DeactivateAsync(
+        int id,
+        Guid callerUserId,
+        CancellationToken cancellationToken = default)
+    {
+        var restaurant = await GetRestaurantForManagerAsync(
+            id,
+            callerUserId,
+            cancellationToken);
+
+        if (!restaurant.IsActive)
+        {
+            return;
+        }
+
+        restaurant.IsActive = false;
+        await _restaurantRepository.SaveChangesAsync(cancellationToken);
+        InvalidateRestaurantCatalog(restaurant.OwnerId);
+    }
+
+    private async Task<Restaurant> GetRestaurantForManagerAsync(
+        int restaurantId,
+        Guid callerUserId,
+        CancellationToken cancellationToken)
+    {
+        ValidateRestaurantId(restaurantId);
+        ValidateUserId(callerUserId);
+
+        var restaurant = await _restaurantRepository.GetByIdAsync(
+            restaurantId,
+            cancellationToken);
+
+        if (restaurant is null)
+        {
+            throw new NotFoundException($"Restaurant with ID {restaurantId} was not found.");
+        }
+
+        var caller = await _userRepository.GetByIdAsync(callerUserId, cancellationToken);
+        if (caller is null || !caller.IsActive)
+        {
+            throw new UnauthorizedException("Your account is unavailable.");
+        }
+
+        if (caller.Role == UserRole.Admin)
+        {
+            return restaurant;
+        }
+
+        if (caller.Role != UserRole.RestaurantOwner || restaurant.OwnerId != caller.Id)
+        {
+            throw new ForbiddenException(
+                "Only this restaurant's owner or an administrator can manage it.");
+        }
+
+        return restaurant;
     }
 
     private static void ValidateRestaurantId(int id)
@@ -292,5 +380,11 @@ public sealed class RestaurantService : IRestaurantService
             IsActive = restaurant.IsActive,
             CreatedAtUtc = restaurant.CreatedAtUtc
         };
+    }
+
+    private void InvalidateRestaurantCatalog(Guid? ownerId)
+    {
+        _cache.EvictTag(CacheTags.Restaurants);
+        _cache.EvictTag(CacheTags.MenuItems);
     }
 }

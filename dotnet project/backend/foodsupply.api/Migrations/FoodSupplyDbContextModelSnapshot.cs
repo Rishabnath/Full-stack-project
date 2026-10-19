@@ -465,6 +465,63 @@ namespace foodsupply.api.Migrations
                         });
                 });
 
+            modelBuilder.Entity("FoodSupply.Api.Entities.OrderOutboxMessage", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<int>("AttemptCount")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0)
+                        .HasColumnName("attempt_count");
+
+                    b.Property<string>("EventType")
+                        .IsRequired()
+                        .HasMaxLength(150)
+                        .HasColumnType("character varying(150)")
+                        .HasColumnName("event_type");
+
+                    b.Property<string>("LastError")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("last_error");
+
+                    b.Property<DateTime?>("LockedUntilUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("locked_until_utc");
+
+                    b.Property<DateTime>("NextAttemptAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("next_attempt_at_utc");
+
+                    b.Property<DateTime>("OccurredAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("occurred_at_utc");
+
+                    b.Property<string>("Payload")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("payload");
+
+                    b.Property<DateTime?>("PublishedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("published_at_utc");
+
+                    b.Property<string>("RoutingKey")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("routing_key");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("PublishedAtUtc", "NextAttemptAtUtc", "OccurredAtUtc");
+
+                    b.ToTable("outbox_messages", (string)null);
+                });
+
             modelBuilder.Entity("FoodSupply.Api.Entities.OrderStatusHistory", b =>
                 {
                     b.Property<int>("Id")

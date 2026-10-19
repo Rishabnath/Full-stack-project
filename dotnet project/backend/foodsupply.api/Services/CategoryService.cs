@@ -1,4 +1,5 @@
 using FoodSupply.Api.DTOs.Categories;
+using FoodSupply.Api.Caching;
 using FoodSupply.Api.Entities;
 using FoodSupply.Api.Exceptions;
 using FoodSupply.Api.Repositories.Interfaces;
@@ -9,20 +10,32 @@ namespace FoodSupply.Api.Services;
 public sealed class CategoryService : ICategoryService
 {
     private readonly ICategoryRepository _categoryRepository;
+    private readonly IAppCache _cache;
 
-    public CategoryService(ICategoryRepository categoryRepository)
+    public CategoryService(
+        ICategoryRepository categoryRepository,
+        IAppCache cache)
     {
         _categoryRepository = categoryRepository;
+        _cache = cache;
     }
 
     public async Task<IReadOnlyList<CategoryResponse>> GetAllAsync(
         CancellationToken cancellationToken = default)
     {
-        var categories = await _categoryRepository.GetAllAsync(cancellationToken);
-
-        return categories
-            .Select(MapToResponse)
-            .ToList();
+        return await _cache.GetOrCreateAsync(
+            "catalog:categories:active:all",
+            CacheDurations.Catalog,
+            async token =>
+            {
+                var categories = await _categoryRepository.GetAllAsync(token);
+                return categories
+                    .Where(category => category.IsActive)
+                    .Select(MapToResponse)
+                    .ToList();
+            },
+            cancellationToken,
+            CacheTags.Categories);
     }
 
     public async Task<CategoryResponse> GetByIdAsync(
@@ -34,14 +47,23 @@ public sealed class CategoryService : ICategoryService
             throw new BadRequestException("Category ID must be greater than zero.");
         }
 
-        var category = await _categoryRepository.GetByIdAsync(id, cancellationToken);
+        return await _cache.GetOrCreateAsync(
+            $"catalog:categories:active:{id}",
+            CacheDurations.Catalog,
+            async token =>
+            {
+                var category = await _categoryRepository.GetByIdAsync(id, token);
 
-        if (category is null)
-        {
-            throw new NotFoundException($"Category with ID {id} was not found.");
-        }
+                if (category is null || !category.IsActive)
+                {
+                    throw new NotFoundException(
+                        $"Active category with ID {id} was not found.");
+                }
 
-        return MapToResponse(category);
+                return MapToResponse(category);
+            },
+            cancellationToken,
+            CacheTags.Categories);
     }
 
     public async Task<CategoryResponse> CreateAsync(
@@ -72,6 +94,7 @@ public sealed class CategoryService : ICategoryService
 
         await _categoryRepository.AddAsync(category, cancellationToken);
         await _categoryRepository.SaveChangesAsync(cancellationToken);
+        InvalidateCatalog();
 
         return MapToResponse(category);
     }
@@ -113,6 +136,7 @@ public sealed class CategoryService : ICategoryService
         category.Description = description;
 
         await _categoryRepository.SaveChangesAsync(cancellationToken);
+        InvalidateCatalog();
 
         return MapToResponse(category);
     }
@@ -140,6 +164,7 @@ public sealed class CategoryService : ICategoryService
 
         category.IsActive = false;
         await _categoryRepository.SaveChangesAsync(cancellationToken);
+        InvalidateCatalog();
     }
 
     private static string NormalizeName(string? name)
@@ -187,5 +212,11 @@ public sealed class CategoryService : ICategoryService
             Description = category.Description,
             IsActive = category.IsActive
         };
+    }
+
+    private void InvalidateCatalog()
+    {
+        _cache.EvictTag(CacheTags.Categories);
+        _cache.EvictTag(CacheTags.MenuItems);
     }
 }

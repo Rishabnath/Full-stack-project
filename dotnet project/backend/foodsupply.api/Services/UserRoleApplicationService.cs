@@ -1,4 +1,5 @@
 using FoodSupply.Api.DTOs.RoleApplications;
+using FoodSupply.Api.Caching;
 using FoodSupply.Api.Entities;
 using FoodSupply.Api.Exceptions;
 using FoodSupply.Api.Repositories.Interfaces;
@@ -10,13 +11,16 @@ public sealed class UserRoleApplicationService : IUserRoleApplicationService
 {
     private readonly IUserRepository _userRepository;
     private readonly IUserRoleApplicationRepository _applicationRepository;
+    private readonly IAppCache _cache;
 
     public UserRoleApplicationService(
         IUserRepository userRepository,
-        IUserRoleApplicationRepository applicationRepository)
+        IUserRoleApplicationRepository applicationRepository,
+        IAppCache cache)
     {
         _userRepository = userRepository;
         _applicationRepository = applicationRepository;
+        _cache = cache;
     }
 
     public async Task<RoleApplicationResponse> ApplyAsync(
@@ -24,6 +28,8 @@ public sealed class UserRoleApplicationService : IUserRoleApplicationService
         CreateRoleApplicationRequest request,
         CancellationToken cancellationToken = default)
     {
+        ValidateUserId(applicantUserId);
+
         if (request is null)
         {
             throw new BadRequestException("Role application request body is required.");
@@ -89,6 +95,7 @@ public sealed class UserRoleApplicationService : IUserRoleApplicationService
 
         await _applicationRepository.AddAsync(application, cancellationToken);
         await _applicationRepository.SaveChangesAsync(cancellationToken);
+        InvalidateApplications(applicantUserId);
 
         application.Applicant = applicant;
         return MapToResponse(application);
@@ -98,19 +105,40 @@ public sealed class UserRoleApplicationService : IUserRoleApplicationService
         Guid applicantUserId,
         CancellationToken cancellationToken = default)
     {
-        var applications = await _applicationRepository.GetByApplicantIdAsync(
-            applicantUserId,
-            cancellationToken);
+        ValidateUserId(applicantUserId);
+        await EnsureActiveUserAsync(applicantUserId, cancellationToken);
 
-        return applications.Select(MapToResponse).ToList();
+        return await _cache.GetOrCreateAsync(
+            $"role-applications:user:{applicantUserId:D}",
+            CacheDurations.UserData,
+            async token =>
+            {
+                var applications = await _applicationRepository.GetByApplicantIdAsync(
+                    applicantUserId,
+                    token);
+
+                return applications.Select(MapToResponse).ToList();
+            },
+            cancellationToken,
+            CacheTags.RoleApplications);
     }
 
     public async Task<IReadOnlyList<RoleApplicationResponse>> GetPendingAsync(
+        Guid administratorUserId,
         CancellationToken cancellationToken = default)
     {
-        var applications = await _applicationRepository.GetPendingAsync(cancellationToken);
+        await GetActiveAdministratorAsync(administratorUserId, cancellationToken);
 
-        return applications.Select(MapToResponse).ToList();
+        return await _cache.GetOrCreateAsync(
+            "role-applications:pending",
+            CacheDurations.UserData,
+            async token =>
+            {
+                var applications = await _applicationRepository.GetPendingAsync(token);
+                return applications.Select(MapToResponse).ToList();
+            },
+            cancellationToken,
+            CacheTags.RoleApplications);
     }
 
     public async Task<RoleApplicationResponse> ApproveAsync(
@@ -136,6 +164,7 @@ public sealed class UserRoleApplicationService : IUserRoleApplicationService
         application.Applicant.Role = application.RequestedRole;
 
         await _applicationRepository.SaveChangesAsync(cancellationToken);
+        InvalidateApplications(application.ApplicantUserId);
 
         return MapToResponse(application);
     }
@@ -162,6 +191,7 @@ public sealed class UserRoleApplicationService : IUserRoleApplicationService
         application.ReviewedAtUtc = DateTime.UtcNow;
 
         await _applicationRepository.SaveChangesAsync(cancellationToken);
+        InvalidateApplications(application.ApplicantUserId);
 
         return MapToResponse(application);
     }
@@ -182,6 +212,17 @@ public sealed class UserRoleApplicationService : IUserRoleApplicationService
         }
 
         return administrator;
+    }
+
+    private async Task EnsureActiveUserAsync(
+        Guid userId,
+        CancellationToken cancellationToken)
+    {
+        var user = await _userRepository.GetByIdAsync(userId, cancellationToken);
+        if (user is null || !user.IsActive)
+        {
+            throw new UnauthorizedException("Your account is unavailable.");
+        }
     }
 
     private async Task<UserRoleApplication> GetPendingApplicationAsync(
@@ -220,9 +261,31 @@ public sealed class UserRoleApplicationService : IUserRoleApplicationService
 
     private static string? NormalizeReviewNote(string? reviewNote)
     {
-        return string.IsNullOrWhiteSpace(reviewNote)
-            ? null
-            : reviewNote.Trim();
+        if (string.IsNullOrWhiteSpace(reviewNote))
+        {
+            return null;
+        }
+
+        var normalizedNote = reviewNote.Trim();
+        if (normalizedNote.Length > 500)
+        {
+            throw new BadRequestException("Review note cannot exceed 500 characters.");
+        }
+
+        return normalizedNote;
+    }
+
+    private static void ValidateUserId(Guid userId)
+    {
+        if (userId == Guid.Empty)
+        {
+            throw new UnauthorizedException("A valid authenticated user is required.");
+        }
+    }
+
+    private void InvalidateApplications(Guid applicantUserId)
+    {
+        _cache.EvictTag(CacheTags.RoleApplications);
     }
 
     private static RoleApplicationResponse MapToResponse(

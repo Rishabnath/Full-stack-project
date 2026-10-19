@@ -33,6 +33,58 @@ public sealed class UserSessionRepository : IUserSessionRepository
                 cancellationToken);
     }
 
+    public async Task<IReadOnlyList<UserSession>> GetActiveByUserIdAsync(
+        Guid userId,
+        DateTime nowUtc,
+        CancellationToken cancellationToken = default)
+    {
+        return await _dbContext.UserSessions
+            .AsNoTracking()
+            .Where(session =>
+                session.UserId == userId &&
+                session.RevokedAtUtc == null &&
+                session.ExpiresAtUtc > nowUtc)
+            .OrderByDescending(session => session.CreatedAtUtc)
+            .ToListAsync(cancellationToken);
+    }
+
+    public Task<bool> IsActiveSessionAsync(
+        Guid userId,
+        Guid sessionId,
+        DateTime nowUtc,
+        CancellationToken cancellationToken = default)
+    {
+        return _dbContext.UserSessions.AnyAsync(
+            session =>
+                session.Id == sessionId &&
+                session.UserId == userId &&
+                session.RevokedAtUtc == null &&
+                session.ExpiresAtUtc > nowUtc &&
+                session.User.IsActive,
+            cancellationToken);
+    }
+
+    public async Task<bool> TryRevokeAsync(
+        Guid userId,
+        Guid sessionId,
+        DateTime revokedAtUtc,
+        CancellationToken cancellationToken = default)
+    {
+        var updatedRows = await _dbContext.UserSessions
+            .Where(session =>
+                session.Id == sessionId &&
+                session.UserId == userId &&
+                session.RevokedAtUtc == null &&
+                session.ExpiresAtUtc > revokedAtUtc)
+            .ExecuteUpdateAsync(
+                setters => setters.SetProperty(
+                    session => session.RevokedAtUtc,
+                    revokedAtUtc),
+                cancellationToken);
+
+        return updatedRows == 1;
+    }
+
     public async Task<bool> TryRotateAsync(
         Guid currentSessionId,
         string currentRefreshTokenHash,

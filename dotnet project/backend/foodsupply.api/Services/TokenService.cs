@@ -21,9 +21,13 @@ public sealed class TokenService : ITokenService
         ValidateOptions(_jwtOptions);
     }
 
-    public IssuedAccessToken CreateAccessToken(ApplicationUser user)
+    public IssuedAccessToken CreateAccessToken(ApplicationUser user, Guid sessionId)
     {
         ArgumentNullException.ThrowIfNull(user);
+        if (sessionId == Guid.Empty)
+        {
+            throw new ArgumentException("A valid session ID is required.", nameof(sessionId));
+        }
 
         var issuedAtUtc = DateTime.UtcNow;
         var expiresAtUtc = issuedAtUtc.AddMinutes(_jwtOptions.AccessTokenMinutes);
@@ -35,6 +39,7 @@ public sealed class TokenService : ITokenService
             new("given_name", user.FirstName),
             new("family_name", user.LastName),
             new("role", user.Role.ToString()),
+            new("sid", sessionId.ToString()),
             new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
         };
 

@@ -1,6 +1,8 @@
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using Npgsql;
 
 namespace FoodSupply.Api.Exceptions;
 
@@ -22,6 +24,13 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
         Exception exception,
         CancellationToken cancellationToken)
     {
+        if (exception is OperationCanceledException &&
+            httpContext.RequestAborted.IsCancellationRequested)
+        {
+            // The client disconnected or cancelled the request; this is not an API failure.
+            return false;
+        }
+
         var (statusCode, title, detail) = exception switch
         {
             BadRequestException => (
@@ -44,6 +53,16 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
                 StatusCodes.Status409Conflict,
                 "Conflict",
                 exception.Message),
+            DbUpdateException
+            {
+                InnerException: PostgresException
+                {
+                    SqlState: PostgresErrorCodes.UniqueViolation
+                }
+            } => (
+                StatusCodes.Status409Conflict,
+                "Conflict",
+                "A record with the supplied value already exists."),
             _ => (
                 StatusCodes.Status500InternalServerError,
                 "Internal Server Error",
