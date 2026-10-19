@@ -12,6 +12,10 @@ public sealed class FoodSupplyDbContext : DbContext
 
     public DbSet<ApplicationUser> Users => Set<ApplicationUser>();
 
+    public DbSet<UserSession> UserSessions => Set<UserSession>();
+
+    public DbSet<UserRoleApplication> UserRoleApplications => Set<UserRoleApplication>();
+
     public DbSet<Category> Categories => Set<Category>();
 
     public DbSet<Restaurant> Restaurants => Set<Restaurant>();
@@ -60,6 +64,11 @@ public sealed class FoodSupplyDbContext : DbContext
             entity.HasIndex(user => user.Email)
                 .IsUnique();
 
+            // The system permits exactly one Administrator account.
+            entity.HasIndex(user => user.Role)
+                .IsUnique()
+                .HasFilter("\"role\" = 'Admin'");
+
             entity.Property(user => user.PasswordHash)
                 .HasColumnName("password_hash")
                 .HasMaxLength(512)
@@ -87,6 +96,136 @@ public sealed class FoodSupplyDbContext : DbContext
                 .HasColumnType("timestamp with time zone")
                 .HasDefaultValueSql("CURRENT_TIMESTAMP")
                 .IsRequired();
+        });
+
+        modelBuilder.Entity<UserRoleApplication>(entity =>
+        {
+            entity.ToTable("user_role_applications");
+
+            entity.HasKey(application => application.Id);
+
+            entity.Property(application => application.Id)
+                .HasColumnName("id")
+                .ValueGeneratedOnAdd();
+
+            entity.Property(application => application.ApplicantUserId)
+                .HasColumnName("applicant_user_id")
+                .IsRequired();
+
+            entity.Property(application => application.RequestedRole)
+                .HasColumnName("requested_role")
+                .HasConversion<string>()
+                .HasMaxLength(32)
+                .IsRequired();
+
+            entity.Property(application => application.Status)
+                .HasColumnName("status")
+                .HasConversion<string>()
+                .HasMaxLength(32)
+                .HasDefaultValue(UserRoleApplicationStatus.Pending)
+                .HasSentinel(UserRoleApplicationStatus.Pending)
+                .IsRequired();
+
+            entity.Property(application => application.BusinessName)
+                .HasColumnName("business_name")
+                .HasMaxLength(150);
+
+            entity.Property(application => application.ApplicationDetails)
+                .HasColumnName("application_details")
+                .HasMaxLength(1500)
+                .IsRequired();
+
+            entity.Property(application => application.ReviewNote)
+                .HasColumnName("review_note")
+                .HasMaxLength(500);
+
+            entity.Property(application => application.SubmittedAtUtc)
+                .HasColumnName("submitted_at_utc")
+                .HasColumnType("timestamp with time zone")
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .IsRequired();
+
+            entity.Property(application => application.ReviewedByUserId)
+                .HasColumnName("reviewed_by_user_id");
+
+            entity.Property(application => application.ReviewedAtUtc)
+                .HasColumnName("reviewed_at_utc")
+                .HasColumnType("timestamp with time zone");
+
+            entity.HasIndex(application => application.ApplicantUserId)
+                .IsUnique()
+                .HasFilter("\"status\" = 'Pending'");
+
+            entity.HasIndex(application => new
+            {
+                application.Status,
+                application.SubmittedAtUtc
+            });
+
+            entity.HasOne(application => application.Applicant)
+                .WithMany(user => user.RoleApplications)
+                .HasForeignKey(application => application.ApplicantUserId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasOne(application => application.Reviewer)
+                .WithMany(user => user.ReviewedRoleApplications)
+                .HasForeignKey(application => application.ReviewedByUserId)
+                .OnDelete(DeleteBehavior.SetNull);
+        });
+
+        modelBuilder.Entity<UserSession>(entity =>
+        {
+            entity.ToTable("user_sessions");
+
+            entity.HasKey(session => session.Id);
+
+            entity.Property(session => session.Id)
+                .HasColumnName("id")
+                .ValueGeneratedOnAdd();
+
+            entity.Property(session => session.UserId)
+                .HasColumnName("user_id")
+                .IsRequired();
+
+            entity.Property(session => session.RefreshTokenHash)
+                .HasColumnName("refresh_token_hash")
+                .HasMaxLength(64)
+                .IsRequired();
+
+            entity.HasIndex(session => session.RefreshTokenHash)
+                .IsUnique();
+
+            entity.Property(session => session.DeviceName)
+                .HasColumnName("device_name")
+                .HasMaxLength(100)
+                .HasDefaultValue("Unknown device")
+                .IsRequired();
+
+            entity.Property(session => session.CreatedAtUtc)
+                .HasColumnName("created_at_utc")
+                .HasColumnType("timestamp with time zone")
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .IsRequired();
+
+            entity.Property(session => session.ExpiresAtUtc)
+                .HasColumnName("expires_at_utc")
+                .HasColumnType("timestamp with time zone")
+                .IsRequired();
+
+            entity.Property(session => session.RevokedAtUtc)
+                .HasColumnName("revoked_at_utc")
+                .HasColumnType("timestamp with time zone");
+
+            entity.Property(session => session.ReplacedBySessionId)
+                .HasColumnName("replaced_by_session_id");
+
+            entity.HasIndex(session => new { session.UserId, session.RevokedAtUtc });
+            entity.HasIndex(session => session.ExpiresAtUtc);
+
+            entity.HasOne(session => session.User)
+                .WithMany(user => user.Sessions)
+                .HasForeignKey(session => session.UserId)
+                .OnDelete(DeleteBehavior.Cascade);
         });
 
         modelBuilder.Entity<Category>(entity =>

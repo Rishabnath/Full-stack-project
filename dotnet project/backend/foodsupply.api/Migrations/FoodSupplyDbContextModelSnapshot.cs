@@ -83,6 +83,10 @@ namespace foodsupply.api.Migrations
                     b.HasIndex("Email")
                         .IsUnique();
 
+                    b.HasIndex("Role")
+                        .IsUnique()
+                        .HasFilter("\"role\" = 'Admin'");
+
                     b.ToTable("app_users", (string)null);
                 });
 
@@ -622,6 +626,129 @@ namespace foodsupply.api.Migrations
                     b.ToTable("restaurants", (string)null);
                 });
 
+            modelBuilder.Entity("FoodSupply.Api.Entities.UserRoleApplication", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("ApplicantUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("applicant_user_id");
+
+                    b.Property<string>("ApplicationDetails")
+                        .IsRequired()
+                        .HasMaxLength(1500)
+                        .HasColumnType("character varying(1500)")
+                        .HasColumnName("application_details");
+
+                    b.Property<string>("BusinessName")
+                        .HasMaxLength(150)
+                        .HasColumnType("character varying(150)")
+                        .HasColumnName("business_name");
+
+                    b.Property<string>("RequestedRole")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("requested_role");
+
+                    b.Property<string>("ReviewNote")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("review_note");
+
+                    b.Property<DateTime?>("ReviewedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("reviewed_at_utc");
+
+                    b.Property<Guid?>("ReviewedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("reviewed_by_user_id");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasDefaultValue("Pending")
+                        .HasColumnName("status");
+
+                    b.Property<DateTime>("SubmittedAtUtc")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("submitted_at_utc")
+                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ApplicantUserId")
+                        .IsUnique()
+                        .HasFilter("\"status\" = 'Pending'");
+
+                    b.HasIndex("ReviewedByUserId");
+
+                    b.HasIndex("Status", "SubmittedAtUtc");
+
+                    b.ToTable("user_role_applications", (string)null);
+                });
+
+            modelBuilder.Entity("FoodSupply.Api.Entities.UserSession", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc")
+                        .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+                    b.Property<string>("DeviceName")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasDefaultValue("Unknown device")
+                        .HasColumnName("device_name");
+
+                    b.Property<DateTime>("ExpiresAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("expires_at_utc");
+
+                    b.Property<string>("RefreshTokenHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("refresh_token_hash");
+
+                    b.Property<Guid?>("ReplacedBySessionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("replaced_by_session_id");
+
+                    b.Property<DateTime?>("RevokedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("revoked_at_utc");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ExpiresAtUtc");
+
+                    b.HasIndex("RefreshTokenHash")
+                        .IsUnique();
+
+                    b.HasIndex("UserId", "RevokedAtUtc");
+
+                    b.ToTable("user_sessions", (string)null);
+                });
+
             modelBuilder.Entity("FoodSupply.Api.Entities.CustomerAddress", b =>
                 {
                     b.HasOne("FoodSupply.Api.Entities.ApplicationUser", "User")
@@ -729,6 +856,35 @@ namespace foodsupply.api.Migrations
                     b.Navigation("Owner");
                 });
 
+            modelBuilder.Entity("FoodSupply.Api.Entities.UserRoleApplication", b =>
+                {
+                    b.HasOne("FoodSupply.Api.Entities.ApplicationUser", "Applicant")
+                        .WithMany("RoleApplications")
+                        .HasForeignKey("ApplicantUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("FoodSupply.Api.Entities.ApplicationUser", "Reviewer")
+                        .WithMany("ReviewedRoleApplications")
+                        .HasForeignKey("ReviewedByUserId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.Navigation("Applicant");
+
+                    b.Navigation("Reviewer");
+                });
+
+            modelBuilder.Entity("FoodSupply.Api.Entities.UserSession", b =>
+                {
+                    b.HasOne("FoodSupply.Api.Entities.ApplicationUser", "User")
+                        .WithMany("Sessions")
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("User");
+                });
+
             modelBuilder.Entity("FoodSupply.Api.Entities.ApplicationUser", b =>
                 {
                     b.Navigation("Addresses");
@@ -736,6 +892,12 @@ namespace foodsupply.api.Migrations
                     b.Navigation("Orders");
 
                     b.Navigation("OwnedRestaurants");
+
+                    b.Navigation("ReviewedRoleApplications");
+
+                    b.Navigation("RoleApplications");
+
+                    b.Navigation("Sessions");
 
                     b.Navigation("StatusChanges");
                 });

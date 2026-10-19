@@ -28,4 +28,12 @@ public sealed class ApplicationUser
     public ICollection<Order> Orders { get; set; } = new List<Order>();
 
     public ICollection<OrderStatusHistory> StatusChanges { get; set; } = new List<OrderStatusHistory>();
+
+    public ICollection<UserRoleApplication> RoleApplications { get; set; } =
+        new List<UserRoleApplication>();
+
+    public ICollection<UserRoleApplication> ReviewedRoleApplications { get; set; } =
+        new List<UserRoleApplication>();
+
+    public ICollection<UserSession> Sessions { get; set; } = new List<UserSession>();
 }
