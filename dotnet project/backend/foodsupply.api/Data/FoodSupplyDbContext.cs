@@ -433,7 +433,13 @@ public sealed class FoodSupplyDbContext : DbContext
                 .HasDefaultValueSql("CURRENT_TIMESTAMP")
                 .IsRequired();
 
-            entity.HasIndex(address => address.UserId);
+            entity.HasIndex(address => address.UserId)
+                .HasDatabaseName("IX_customer_addresses_user_id");
+
+            // PostgreSQL permits many addresses per user but only one default.
+            entity.HasIndex(address => address.UserId, "ux_customer_addresses_user_id_default")
+                .IsUnique()
+                .HasFilter("\"is_default\" = TRUE");
 
             entity.HasOne(address => address.User)
                 .WithMany(user => user.Addresses)
@@ -467,6 +473,9 @@ public sealed class FoodSupplyDbContext : DbContext
 
             entity.Property(order => order.RestaurantId)
                 .HasColumnName("restaurant_id");
+
+            entity.Property(order => order.DeliveryPartnerId)
+                .HasColumnName("delivery_partner_id");
 
             entity.Property(order => order.Status)
                 .HasColumnName("status")
@@ -563,6 +572,7 @@ public sealed class FoodSupplyDbContext : DbContext
 
             entity.HasIndex(order => new { order.CustomerId, order.PlacedAtUtc });
             entity.HasIndex(order => new { order.RestaurantId, order.Status });
+            entity.HasIndex(order => new { order.DeliveryPartnerId, order.Status });
 
             entity.HasOne(order => order.Customer)
                 .WithMany(user => user.Orders)
@@ -573,6 +583,11 @@ public sealed class FoodSupplyDbContext : DbContext
                 .WithMany(restaurant => restaurant.Orders)
                 .HasForeignKey(order => order.RestaurantId)
                 .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasOne(order => order.DeliveryPartner)
+                .WithMany(user => user.DeliveryOrders)
+                .HasForeignKey(order => order.DeliveryPartnerId)
+                .OnDelete(DeleteBehavior.SetNull);
         });
 
         modelBuilder.Entity<OrderItem>(entity =>

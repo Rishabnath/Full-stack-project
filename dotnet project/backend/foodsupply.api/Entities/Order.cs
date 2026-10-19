@@ -10,6 +10,8 @@ public sealed class Order
 
     public int RestaurantId { get; set; }
 
+    public Guid? DeliveryPartnerId { get; set; }
+
     public OrderStatus Status { get; set; } = OrderStatus.Placed;
 
     public decimal Subtotal { get; set; }
@@ -47,6 +49,8 @@ public sealed class Order
     public ApplicationUser Customer { get; set; } = null!;
 
     public Restaurant Restaurant { get; set; } = null!;
+
+    public ApplicationUser? DeliveryPartner { get; set; }
 
     public ICollection<OrderItem> Items { get; set; } = new List<OrderItem>();
 

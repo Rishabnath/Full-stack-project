@@ -17,6 +17,11 @@ public interface IMenuItemRepository
         int menuItemId,
         CancellationToken cancellationToken = default);
 
+    Task<IReadOnlyList<MenuItem>> GetAvailableByIdsAsync(
+        int restaurantId,
+        IReadOnlyCollection<int> menuItemIds,
+        CancellationToken cancellationToken = default);
+
     Task AddAsync(
         MenuItem menuItem,
         CancellationToken cancellationToken = default);

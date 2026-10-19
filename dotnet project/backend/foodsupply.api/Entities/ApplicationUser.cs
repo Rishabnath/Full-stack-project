@@ -27,6 +27,8 @@ public sealed class ApplicationUser
 
     public ICollection<Order> Orders { get; set; } = new List<Order>();
 
+    public ICollection<Order> DeliveryOrders { get; set; } = new List<Order>();
+
     public ICollection<OrderStatusHistory> StatusChanges { get; set; } = new List<OrderStatusHistory>();
 
     public ICollection<UserRoleApplication> RoleApplications { get; set; } =

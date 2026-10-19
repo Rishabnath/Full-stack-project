@@ -57,6 +57,22 @@ public sealed class MenuItemRepository : IMenuItemRepository
                 cancellationToken);
     }
 
+    public async Task<IReadOnlyList<MenuItem>> GetAvailableByIdsAsync(
+        int restaurantId,
+        IReadOnlyCollection<int> menuItemIds,
+        CancellationToken cancellationToken = default)
+    {
+        return await _dbContext.MenuItems
+            .AsNoTracking()
+            .Include(menuItem => menuItem.Category)
+            .Where(menuItem =>
+                menuItem.RestaurantId == restaurantId &&
+                menuItemIds.Contains(menuItem.Id) &&
+                menuItem.IsAvailable &&
+                menuItem.Category.IsActive)
+            .ToListAsync(cancellationToken);
+    }
+
     public async Task AddAsync(
         MenuItem menuItem,
         CancellationToken cancellationToken = default)

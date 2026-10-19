@@ -192,7 +192,12 @@ namespace foodsupply.api.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("UserId");
+                    b.HasIndex("UserId")
+                        .HasDatabaseName("IX_customer_addresses_user_id");
+
+                    b.HasIndex(new[] { "UserId" }, "ux_customer_addresses_user_id_default")
+                        .IsUnique()
+                        .HasFilter("\"is_default\" = TRUE");
 
                     b.ToTable("customer_addresses", (string)null);
                 });
@@ -315,6 +320,10 @@ namespace foodsupply.api.Migrations
                         .HasDefaultValue(0m)
                         .HasColumnName("delivery_fee");
 
+                    b.Property<Guid?>("DeliveryPartnerId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("delivery_partner_id");
+
                     b.Property<string>("DeliveryPostalCode")
                         .IsRequired()
                         .HasMaxLength(20)
@@ -396,6 +405,8 @@ namespace foodsupply.api.Migrations
                         .IsUnique();
 
                     b.HasIndex("CustomerId", "PlacedAtUtc");
+
+                    b.HasIndex("DeliveryPartnerId", "Status");
 
                     b.HasIndex("RestaurantId", "Status");
 
@@ -787,6 +798,11 @@ namespace foodsupply.api.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
+                    b.HasOne("FoodSupply.Api.Entities.ApplicationUser", "DeliveryPartner")
+                        .WithMany("DeliveryOrders")
+                        .HasForeignKey("DeliveryPartnerId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
                     b.HasOne("FoodSupply.Api.Entities.Restaurant", "Restaurant")
                         .WithMany("Orders")
                         .HasForeignKey("RestaurantId")
@@ -794,6 +810,8 @@ namespace foodsupply.api.Migrations
                         .IsRequired();
 
                     b.Navigation("Customer");
+
+                    b.Navigation("DeliveryPartner");
 
                     b.Navigation("Restaurant");
                 });
@@ -888,6 +906,8 @@ namespace foodsupply.api.Migrations
             modelBuilder.Entity("FoodSupply.Api.Entities.ApplicationUser", b =>
                 {
                     b.Navigation("Addresses");
+
+                    b.Navigation("DeliveryOrders");
 
                     b.Navigation("Orders");
 
